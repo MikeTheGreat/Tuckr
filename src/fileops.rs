@@ -1037,4 +1037,474 @@ mod tests {
         assert!(dotfiles_dir.join("Hooks").exists());
         assert!(dotfiles_dir.join("Secrets").exists());
     }
+
+    // ============================================================================
+    // from_stow_cmd Tests
+    // ============================================================================
+
+    /// Test helper for from_stow_cmd tests
+    /// Sets up a mock stow directory and handles cleanup
+    struct FromStowTest {
+        stow_dir: PathBuf,
+        dotfiles_dir: PathBuf,
+        _test_name: String,
+    }
+
+    impl FromStowTest {
+        /// Create a new test environment with a mock stow directory
+        fn new(test_name: &str) -> Self {
+            let stow_dir = std::env::temp_dir()
+                .join(format!("tuckr-stow-{}", test_name))
+                .join("stow");
+
+            fs::create_dir_all(&stow_dir).unwrap();
+
+            let dotfiles_dir = dotfiles::get_dotfiles_path(None).unwrap();
+
+            Self {
+                stow_dir,
+                dotfiles_dir,
+                _test_name: test_name.to_string(),
+            }
+        }
+
+        /// Create a file in the stow directory
+        fn create_stow_file(&self, path: &str, contents: &str) {
+            let full_path = self.stow_dir.join(path);
+            if let Some(parent) = full_path.parent() {
+                fs::create_dir_all(parent).unwrap();
+            }
+            let mut file = fs::File::create(full_path).unwrap();
+            file.write_all(contents.as_bytes()).unwrap();
+        }
+
+        /// Create a directory in the stow directory
+        fn create_stow_dir(&self, path: &str) {
+            let full_path = self.stow_dir.join(path);
+            fs::create_dir_all(full_path).unwrap();
+        }
+
+        /// Get the default context for testing
+        fn ctx(&self) -> Context {
+            Context::default()
+        }
+
+        /// Get the path where a converted file should end up
+        fn converted_path(&self, path: &str) -> PathBuf {
+            self.dotfiles_dir.join("Configs").join(path)
+        }
+
+        /// Create an existing dotfiles directory with some content
+        fn create_existing_dotfiles(&self) {
+            fs::create_dir_all(self.dotfiles_dir.join("Configs/existing_group")).unwrap();
+            let mut file = fs::File::create(
+                self.dotfiles_dir.join("Configs/existing_group/.existing_file")
+            ).unwrap();
+            file.write_all(b"existing content").unwrap();
+        }
+
+        /// Get the backup directory path
+        fn backup_path(&self) -> PathBuf {
+            let dirname = self.dotfiles_dir.file_name().unwrap();
+            self.dotfiles_dir
+                .parent()
+                .unwrap()
+                .join(format!("{}_old", dirname.to_str().unwrap()))
+        }
+    }
+
+    impl Drop for FromStowTest {
+        fn drop(&mut self) {
+            // Clean up stow directory
+            if self.stow_dir.exists() {
+                let _ = fs::remove_dir_all(&self.stow_dir);
+            }
+
+            // Clean up dotfiles directory
+            if self.dotfiles_dir.exists() {
+                let _ = fs::remove_dir_all(&self.dotfiles_dir);
+            }
+
+            // Clean up backup directory if it exists
+            let backup = self.backup_path();
+            if backup.exists() {
+                let _ = fs::remove_dir_all(&backup);
+            }
+
+            // Clean up temp profile directories
+            let temp_dir = dotfiles::get_potential_dotfiles_paths(Some("incomplete_conversion".into())).test;
+            if temp_dir.exists() {
+                let _ = fs::remove_dir_all(&temp_dir);
+            }
+        }
+    }
+
+    #[test]
+    fn from_stow_basic_conversion_without_dotfiles_mode() {
+        let test = FromStowTest::new(std::thread::current().name().unwrap());
+
+        // Create simple stow structure
+        test.create_stow_file("nvim/.config/nvim/init.vim", "\" nvim config");
+        test.create_stow_file("zsh/.zshrc", "# zsh config");
+
+        // Run conversion
+        let result = super::from_stow_cmd(
+            &test.ctx(),
+            Some(test.stow_dir.to_str().unwrap().to_string()),
+            Some(false), // no dot- conversion
+            true,        // assume yes
+        );
+
+        assert!(result.is_ok());
+
+        // Verify files were converted correctly
+        let nvim_config = test.converted_path("nvim/.config/nvim/init.vim");
+        let zsh_config = test.converted_path("zsh/.zshrc");
+
+        assert!(nvim_config.exists());
+        assert!(zsh_config.exists());
+        assert_eq!(fs::read_to_string(nvim_config).unwrap(), "\" nvim config");
+        assert_eq!(fs::read_to_string(zsh_config).unwrap(), "# zsh config");
+    }
+
+    #[test]
+    fn from_stow_conversion_with_dotfiles_mode() {
+        let test = FromStowTest::new(std::thread::current().name().unwrap());
+
+        // Create stow structure with dot- prefix
+        test.create_stow_file("nvim/dot-config/nvim/init.vim", "\" nvim config");
+        test.create_stow_file("zsh/dot-zshrc", "# zsh config");
+
+        // Run conversion with dotfiles mode
+        let result = super::from_stow_cmd(
+            &test.ctx(),
+            Some(test.stow_dir.to_str().unwrap().to_string()),
+            Some(true), // convert dot- to .
+            true,       // assume yes
+        );
+
+        assert!(result.is_ok());
+
+        // Verify files were converted with dots
+        let nvim_config = test.converted_path("nvim/.config/nvim/init.vim");
+        let zsh_config = test.converted_path("zsh/.zshrc");
+
+        assert!(nvim_config.exists());
+        assert!(zsh_config.exists());
+        assert_eq!(fs::read_to_string(nvim_config).unwrap(), "\" nvim config");
+        assert_eq!(fs::read_to_string(zsh_config).unwrap(), "# zsh config");
+    }
+
+    #[test]
+    fn from_stow_nested_dot_prefix_conversion() {
+        let test = FromStowTest::new(std::thread::current().name().unwrap());
+
+        // Create nested dot- prefixes
+        test.create_stow_file("program/dot-config/dot-nested/file.txt", "content");
+
+        let result = super::from_stow_cmd(
+            &test.ctx(),
+            Some(test.stow_dir.to_str().unwrap().to_string()),
+            Some(true),
+            true,
+        );
+
+        assert!(result.is_ok());
+
+        // Should convert all dot- prefixes to .
+        let converted = test.converted_path("program/.config/.nested/file.txt");
+        assert!(converted.exists());
+        assert_eq!(fs::read_to_string(converted).unwrap(), "content");
+    }
+
+    #[test]
+    fn from_stow_backs_up_existing_dotfiles() {
+        let test = FromStowTest::new(std::thread::current().name().unwrap());
+
+        // Create existing dotfiles
+        test.create_existing_dotfiles();
+
+        // Create stow directory
+        test.create_stow_file("newgroup/.newfile", "new content");
+
+        let result = super::from_stow_cmd(
+            &test.ctx(),
+            Some(test.stow_dir.to_str().unwrap().to_string()),
+            Some(false),
+            true,
+        );
+
+        assert!(result.is_ok());
+
+        // Original should be backed up
+        let backup = test.backup_path();
+        assert!(backup.exists());
+        assert!(backup.join("Configs/existing_group/.existing_file").exists());
+
+        // New dotfiles should exist
+        assert!(test.converted_path("newgroup/.newfile").exists());
+    }
+
+    #[test]
+    fn from_stow_fails_when_backup_already_exists() {
+        let test = FromStowTest::new(std::thread::current().name().unwrap());
+
+        // Create existing dotfiles and backup
+        test.create_existing_dotfiles();
+        let backup = test.backup_path();
+        fs::create_dir_all(&backup).unwrap();
+
+        test.create_stow_file("group/.file", "content");
+
+        let result = super::from_stow_cmd(
+            &test.ctx(),
+            Some(test.stow_dir.to_str().unwrap().to_string()),
+            Some(false),
+            true,
+        );
+
+        // Should fail because backup already exists
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn from_stow_no_backup_needed_when_no_existing_dotfiles() {
+        let test = FromStowTest::new(std::thread::current().name().unwrap());
+
+        // Don't create existing dotfiles - only stow directory
+        test.create_stow_file("group/.file", "content");
+
+        let result = super::from_stow_cmd(
+            &test.ctx(),
+            Some(test.stow_dir.to_str().unwrap().to_string()),
+            Some(false),
+            true,
+        );
+
+        assert!(result.is_ok());
+
+        // No backup should be created
+        assert!(!test.backup_path().exists());
+
+        // Files should be converted
+        assert!(test.converted_path("group/.file").exists());
+    }
+
+    #[test]
+    fn from_stow_dry_run_simulates_without_creating_files() {
+        let test = FromStowTest::new(std::thread::current().name().unwrap());
+
+        test.create_stow_file("group/.file", "content");
+
+        let mut ctx = test.ctx();
+        ctx.dry_run = true;
+
+        let result = super::from_stow_cmd(
+            &ctx,
+            Some(test.stow_dir.to_str().unwrap().to_string()),
+            Some(false),
+            true,
+        );
+
+        assert!(result.is_ok());
+
+        // Files should NOT be created in dry-run
+        assert!(!test.converted_path("group/.file").exists());
+    }
+
+    #[test]
+    fn from_stow_dry_run_with_dotfiles_mode() {
+        let test = FromStowTest::new(std::thread::current().name().unwrap());
+
+        test.create_stow_file("group/dot-file", "content");
+
+        let mut ctx = test.ctx();
+        ctx.dry_run = true;
+
+        let result = super::from_stow_cmd(
+            &ctx,
+            Some(test.stow_dir.to_str().unwrap().to_string()),
+            Some(true),
+            true,
+        );
+
+        assert!(result.is_ok());
+
+        // Should not create actual files
+        assert!(!test.converted_path("group/.file").exists());
+    }
+
+    #[test]
+    fn from_stow_conversion_with_profile() {
+        let thread = std::thread::current();
+        let test_name = thread.name().unwrap();
+        let stow_dir = std::env::temp_dir()
+            .join(format!("tuckr-stow-{}", test_name))
+            .join("stow");
+        fs::create_dir_all(&stow_dir).unwrap();
+
+        // Create stow file
+        let file_path = stow_dir.join("group/.file");
+        fs::create_dir_all(file_path.parent().unwrap()).unwrap();
+        fs::write(&file_path, "content").unwrap();
+
+        // Use profile
+        let mut ctx = Context::default();
+        ctx.profile = Some("work".to_string());
+
+        let result = super::from_stow_cmd(
+            &ctx,
+            Some(stow_dir.to_str().unwrap().to_string()),
+            Some(false),
+            true,
+        );
+
+        assert!(result.is_ok());
+
+        // Should create dotfiles_work directory
+        let dotfiles_dir = dotfiles::get_dotfiles_path(Some("work".to_string())).unwrap();
+        assert!(dotfiles_dir.exists());
+        assert!(dotfiles_dir.join("Configs/group/.file").exists());
+
+        // Cleanup
+        let _ = fs::remove_dir_all(&stow_dir);
+        let _ = fs::remove_dir_all(&dotfiles_dir);
+        let backup_dir = dotfiles_dir.parent().unwrap().join("dotfiles_work_old");
+        let _ = fs::remove_dir_all(&backup_dir);
+        let temp_dir = dotfiles::get_potential_dotfiles_paths(
+            Some("work_incomplete_conversion".into())
+        ).test;
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn from_stow_temp_profile_cleanup() {
+        let test = FromStowTest::new(std::thread::current().name().unwrap());
+
+        // Create a leftover temp profile directory
+        let temp_profile = Some("incomplete_conversion".to_string());
+        let temp_dir = dotfiles::get_potential_dotfiles_paths(temp_profile.clone()).test;
+        fs::create_dir_all(&temp_dir).unwrap();
+        fs::write(temp_dir.join("leftover.txt"), "old stuff").unwrap();
+
+        test.create_stow_file("group/.file", "content");
+
+        let result = super::from_stow_cmd(
+            &test.ctx(),
+            Some(test.stow_dir.to_str().unwrap().to_string()),
+            Some(false),
+            true,
+        );
+
+        assert!(result.is_ok());
+
+        // Conversion should succeed
+        assert!(test.converted_path("group/.file").exists());
+    }
+
+    #[test]
+    fn from_stow_custom_stow_path() {
+        let test = FromStowTest::new(std::thread::current().name().unwrap());
+
+        // Create file in custom stow directory
+        test.create_stow_file("group/.file", "content");
+
+        // Explicitly provide stow path
+        let result = super::from_stow_cmd(
+            &test.ctx(),
+            Some(test.stow_dir.to_str().unwrap().to_string()),
+            Some(false),
+            true,
+        );
+
+        assert!(result.is_ok());
+        assert!(test.converted_path("group/.file").exists());
+    }
+
+    #[test]
+    fn from_stow_empty_stow_directory() {
+        let test = FromStowTest::new(std::thread::current().name().unwrap());
+
+        // Don't create any files, just the empty directory
+
+        let result = super::from_stow_cmd(
+            &test.ctx(),
+            Some(test.stow_dir.to_str().unwrap().to_string()),
+            Some(false),
+            true,
+        );
+
+        assert!(result.is_ok());
+
+        // Should still create the Configs/Hooks/Secrets structure
+        assert!(test.dotfiles_dir.join("Configs").exists());
+        assert!(test.dotfiles_dir.join("Hooks").exists());
+        assert!(test.dotfiles_dir.join("Secrets").exists());
+    }
+
+    #[test]
+    fn from_stow_deeply_nested_structure() {
+        let test = FromStowTest::new(std::thread::current().name().unwrap());
+
+        // Create deeply nested structure
+        test.create_stow_file("group/a/b/c/d/e/f/deep.txt", "nested content");
+
+        let result = super::from_stow_cmd(
+            &test.ctx(),
+            Some(test.stow_dir.to_str().unwrap().to_string()),
+            Some(false),
+            true,
+        );
+
+        assert!(result.is_ok());
+
+        let deep_file = test.converted_path("group/a/b/c/d/e/f/deep.txt");
+        assert!(deep_file.exists());
+        assert_eq!(fs::read_to_string(deep_file).unwrap(), "nested content");
+    }
+
+    #[test]
+    fn from_stow_handles_both_files_and_directories() {
+        let test = FromStowTest::new(std::thread::current().name().unwrap());
+
+        // Create mix of files and directories
+        test.create_stow_file("group/file1.txt", "file1");
+        test.create_stow_dir("group/emptydir");
+        test.create_stow_file("group/subdir/file2.txt", "file2");
+
+        let result = super::from_stow_cmd(
+            &test.ctx(),
+            Some(test.stow_dir.to_str().unwrap().to_string()),
+            Some(false),
+            true,
+        );
+
+        assert!(result.is_ok());
+
+        // Files should exist
+        assert!(test.converted_path("group/file1.txt").exists());
+        assert!(test.converted_path("group/subdir/file2.txt").exists());
+
+        // Directories should be created
+        assert!(test.converted_path("group/emptydir").exists());
+        assert!(test.converted_path("group/subdir").exists());
+    }
+
+    #[test]
+    fn from_stow_skip_confirmation_when_assume_yes() {
+        let test = FromStowTest::new(std::thread::current().name().unwrap());
+
+        test.create_stow_file("group/.file", "content");
+
+        // With assume_yes=true, should not wait for user input
+        let result = super::from_stow_cmd(
+            &test.ctx(),
+            Some(test.stow_dir.to_str().unwrap().to_string()),
+            Some(false),
+            true, // assume_yes
+        );
+
+        assert!(result.is_ok());
+        assert!(test.converted_path("group/.file").exists());
+    }
 }
