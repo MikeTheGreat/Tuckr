@@ -433,15 +433,11 @@ pub enum DotfileType {
 }
 
 /// Returns if a config has been setup for <group> on <dtype>
-pub fn dotfile_contains(profile: Option<String>, dtype: DotfileType, group: &str) -> bool {
+pub fn dotfile_contains(dotfiles_dir: &path::PathBuf, dtype: DotfileType, group: &str) -> bool {
     let target_dir = match dtype {
         DotfileType::Configs => "Configs",
         DotfileType::Secrets => "Secrets",
         DotfileType::Hooks => "Hooks",
-    };
-
-    let Ok(dotfiles_dir) = get_dotfiles_path(profile) else {
-        return false;
     };
 
     let group_src = dotfiles_dir.join(target_dir).join(group);
@@ -450,14 +446,14 @@ pub fn dotfile_contains(profile: Option<String>, dtype: DotfileType, group: &str
 
 /// Returns all groups in the slice that don't have a corresponding directory in dotfiles/{Configs,Hooks,Secrets}
 pub fn get_nonexistent_groups(
-    profile: Option<String>,
+    dotfiles_dir: &path::PathBuf,
     dtype: DotfileType,
     groups: &[impl AsRef<str>],
 ) -> Option<Vec<String>> {
     let mut nonexistent_groups = Vec::new();
     for group in groups {
         let group = group.as_ref();
-        if !dotfiles::dotfile_contains(profile.clone(), dtype, group) && group != "*" {
+        if !dotfiles::dotfile_contains(dotfiles_dir, dtype, group) && group != "*" {
             nonexistent_groups.push(group.into());
         }
     }

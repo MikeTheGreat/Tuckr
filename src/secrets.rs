@@ -20,15 +20,7 @@ struct SecretsHandler {
 }
 
 impl SecretsHandler {
-    fn try_new(profile: Option<String>) -> Result<Self, ExitCode> {
-        let dotfiles_dir = match dotfiles::get_dotfiles_path(profile) {
-            Ok(path) => path,
-            Err(e) => {
-                eprintln!("{e}");
-                return Err(ReturnCode::CouldntFindDotfiles.into());
-            }
-        };
-
+    fn try_new(dotfiles_dir: PathBuf) -> Result<Self, ExitCode> {
         // makes a hash of the password so that it can fit on the 256 bit buffer used by the
         // algorithm
         let input_key = rpassword::prompt_password(format!("{}: ", t!("info.password"))).unwrap();
@@ -95,7 +87,7 @@ pub fn encrypt_cmd(ctx: &Context, group: &str, dotfiles: &[String]) -> Result<()
         }
     }
 
-    let handler = SecretsHandler::try_new(ctx.profile.clone())?;
+    let handler = SecretsHandler::try_new(ctx.dotfiles_dir.clone())?;
 
     let dest_dir = handler.dotfiles_dir.join("Secrets").join(group);
     if !dest_dir.exists() {
@@ -168,10 +160,10 @@ pub fn encrypt_cmd(ctx: &Context, group: &str, dotfiles: &[String]) -> Result<()
 
 /// Decrypts secrets
 pub fn decrypt_cmd(ctx: &Context, groups: &[String], exclude: &[String]) -> Result<(), ExitCode> {
-    let handler = SecretsHandler::try_new(ctx.profile.clone())?;
+    let handler = SecretsHandler::try_new(ctx.dotfiles_dir.clone())?;
 
     if let Some(nonexistent_groups) = dotfiles::get_nonexistent_groups(
-        ctx.profile.clone(),
+        &ctx.dotfiles_dir,
         dotfiles::DotfileType::Secrets,
         groups,
     ) {

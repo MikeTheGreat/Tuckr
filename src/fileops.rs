@@ -155,15 +155,7 @@ impl Iterator for DirWalk {
 
 /// Creates the necessary files and folders for a tuckr directory if they don't exist
 pub fn init_cmd(ctx: &Context) -> Result<(), ExitCode> {
-    let potential_dirs = dotfiles::get_potential_dotfiles_paths(ctx.profile.clone());
-
-    let dotfiles_dir = if cfg!(test) {
-        potential_dirs.test
-    } else if let Some(dir) = potential_dirs.env {
-        dir
-    } else {
-        potential_dirs.config
-    };
+    let dotfiles_dir = &ctx.dotfiles_dir;
 
     for dir in [
         dotfiles_dir.join("Configs"),
@@ -203,13 +195,7 @@ pub fn push_cmd(
     only_files: bool,
     assume_yes: bool,
 ) -> Result<(), ExitCode> {
-    let dotfiles_dir = match dotfiles::get_dotfiles_path(ctx.profile.clone()) {
-        Ok(dir) => dir.join("Configs").join(&group),
-        Err(e) => {
-            eprintln!("{e}");
-            return Err(ReturnCode::CouldntFindDotfiles.into());
-        }
-    };
+    let dotfiles_dir = ctx.dotfiles_dir.join("Configs").join(&group);
 
     let mut any_file_failed = false;
     let mut created_dirs = HashSet::new();
@@ -336,13 +322,7 @@ pub fn pop_cmd(
     delete: bool,
     assume_yes: bool,
 ) -> Result<(), ExitCode> {
-    let dotfiles_dir = match dotfiles::get_dotfiles_path(ctx.profile.clone()) {
-        Ok(dir) => dir.join("Configs"),
-        Err(e) => {
-            eprintln!("{e}");
-            return Err(ReturnCode::CouldntFindDotfiles.into());
-        }
-    };
+    let dotfiles_dir = ctx.dotfiles_dir.join("Configs");
 
     let mut valid_groups = Vec::new();
     let mut invalid_groups = Vec::new();
@@ -412,13 +392,7 @@ pub fn pop_cmd(
 }
 
 pub fn ls_hooks_cmd(ctx: &Context) -> Result<(), ExitCode> {
-    let dir = match dotfiles::get_dotfiles_path(ctx.profile.clone()) {
-        Ok(dir) => dir.join("Hooks"),
-        Err(err) => {
-            eprintln!("{err}");
-            return Err(ReturnCode::CouldntFindDotfiles.into());
-        }
-    };
+    let dir = ctx.dotfiles_dir.join("Hooks");
 
     if !dir.exists() {
         eprintln!("{}", t!("errors.no_dir_setup_for_x", x = "Hooks").red());
@@ -499,9 +473,7 @@ pub fn ls_hooks_cmd(ctx: &Context) -> Result<(), ExitCode> {
 }
 
 pub fn ls_secrets_cmd(ctx: &Context) -> Result<(), ExitCode> {
-    let secrets_dir = dotfiles::get_dotfiles_path(ctx.profile.clone())
-        .unwrap()
-        .join("Secrets");
+    let secrets_dir = ctx.dotfiles_dir.join("Secrets");
 
     let Ok(secrets) = secrets_dir.read_dir() else {
         eprintln!("{}", t!("errors.no_dir_setup_for_x", x = "Secrets").red());
@@ -566,13 +538,7 @@ pub fn ls_profiles_cmd() -> Result<(), ExitCode> {
 }
 
 pub fn groupis_cmd(ctx: &Context, files: &[String]) -> Result<(), ExitCode> {
-    let dotfiles_dir = match dotfiles::get_dotfiles_path(ctx.profile.clone()) {
-        Ok(dir) => dir,
-        Err(err) => {
-            eprintln!("{err}");
-            return Err(ReturnCode::CouldntFindDotfiles.into());
-        }
-    };
+    let dotfiles_dir = &ctx.dotfiles_dir;
 
     for file in files {
         let file_path = Path::new(file);
@@ -994,11 +960,10 @@ mod tests {
         let ctx = Context::default();
         super::init_cmd(&ctx).unwrap();
 
-        let dotfiles_dir = dotfiles::get_dotfiles_path(ctx.profile).unwrap();
-        assert!(dotfiles_dir.exists());
-        assert!(dotfiles_dir.join("Configs").exists());
-        assert!(dotfiles_dir.join("Hooks").exists());
-        assert!(dotfiles_dir.join("Secrets").exists());
+        assert!(ctx.dotfiles_dir.exists());
+        assert!(ctx.dotfiles_dir.join("Configs").exists());
+        assert!(ctx.dotfiles_dir.join("Hooks").exists());
+        assert!(ctx.dotfiles_dir.join("Secrets").exists());
     }
 
     // ============================================================================

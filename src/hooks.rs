@@ -73,15 +73,7 @@ impl Iterator for DeployStages {
 
 /// Runs hooks of type PreHook or PostHook
 fn run_set_hook(ctx: &Context, group: &str, hook_type: DeployStep) -> Result<(), ExitCode> {
-    let dotfiles_dir = match dotfiles::get_dotfiles_path(ctx.profile.clone()) {
-        Ok(dir) => dir,
-        Err(e) => {
-            eprintln!("{e}");
-            return Err(ReturnCode::CouldntFindDotfiles.into());
-        }
-    };
-
-    let group_dir = dotfiles_dir.join("Hooks").join(group);
+    let group_dir = ctx.dotfiles_dir.join("Hooks").join(group);
     // a hook might just be a `tuckr add` meaning, so a corresponding hooks group dir might just not exist at all
     if !group_dir.exists() {
         return Ok(());
@@ -145,9 +137,9 @@ fn run_set_hook(ctx: &Context, group: &str, hook_type: DeployStep) -> Result<(),
     Ok(())
 }
 
-fn all_hooks_are_nonexistent(profile: Option<String>, groups: &[String]) -> bool {
+fn all_hooks_are_nonexistent(dotfiles_dir: &PathBuf, groups: &[String]) -> bool {
     let Some(nonexistent_groups) =
-        dotfiles::get_nonexistent_groups(profile.clone(), dotfiles::DotfileType::Hooks, groups)
+        dotfiles::get_nonexistent_groups(dotfiles_dir, dotfiles::DotfileType::Hooks, groups)
     else {
         return false;
     };
@@ -166,7 +158,7 @@ pub fn set_cmd(
     adopt: bool,
     assume_yes: bool,
 ) -> Result<(), ExitCode> {
-    if all_hooks_are_nonexistent(ctx.profile.clone(), groups) {
+    if all_hooks_are_nonexistent(&ctx.dotfiles_dir, groups) {
         println!(
             "{}",
             t!("info.no_hooks_exist_running_cmd", cmd = "tuckr add").yellow()
@@ -174,13 +166,7 @@ pub fn set_cmd(
         return symlinks::add_cmd(ctx, only_files, groups, exclude, force, adopt, assume_yes);
     }
 
-    let hooks_dir = match dotfiles::get_dotfiles_path(ctx.profile.clone()) {
-        Ok(dir) => dir.join("Hooks"),
-        Err(err) => {
-            eprintln!("{}", err.red());
-            return Err(ReturnCode::NoSetupFolder.into());
-        }
-    };
+    let hooks_dir = ctx.dotfiles_dir.join("Hooks");
 
     let run_deploy_steps = |stages: DeployStages, group: String| -> Result<(), ExitCode> {
         if !dotfiles::group_is_valid_target(&group, &ctx.custom_targets) || exclude.contains(&group)
@@ -198,7 +184,7 @@ pub fn set_cmd(
 
                 DeployStep::Symlink => {
                     if !dotfiles::dotfile_contains(
-                        ctx.profile.clone(),
+                        &ctx.dotfiles_dir,
                         dotfiles::DotfileType::Configs,
                         &group,
                     ) {
@@ -240,9 +226,7 @@ pub fn set_cmd(
 
         add_group_dotfiles(hooks_dir)?;
 
-        let configs_dir = dotfiles::get_dotfiles_path(ctx.profile.clone())
-            .unwrap()
-            .join("Configs");
+        let configs_dir = ctx.dotfiles_dir.join("Configs");
 
         if configs_dir.exists() {
             add_group_dotfiles(configs_dir)?;
@@ -310,7 +294,7 @@ pub fn set_cmd(
 
 /// Runs cleanup hooks for groups and then removes all their symlinks
 pub fn unset_cmd(ctx: &Context, groups: &[String], exclude: &[String]) -> Result<(), ExitCode> {
-    if all_hooks_are_nonexistent(ctx.profile.clone(), groups) {
+    if all_hooks_are_nonexistent(&ctx.dotfiles_dir, groups) {
         println!(
             "{}",
             t!("info.no_hooks_exist_running_cmd", cmd = "tuckr rm").yellow()
@@ -318,13 +302,7 @@ pub fn unset_cmd(ctx: &Context, groups: &[String], exclude: &[String]) -> Result
         return symlinks::remove_cmd(ctx, groups, exclude);
     }
 
-    let hooks_dir = match dotfiles::get_dotfiles_path(ctx.profile.clone()) {
-        Ok(dir) => dir.join("Hooks"),
-        Err(err) => {
-            eprintln!("{}", err.red());
-            return Err(ReturnCode::NoSetupFolder.into());
-        }
-    };
+    let hooks_dir = ctx.dotfiles_dir.join("Hooks");
 
     let wildcard = String::from("*");
     if groups.contains(&wildcard) {

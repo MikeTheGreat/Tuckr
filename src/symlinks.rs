@@ -121,14 +121,6 @@ struct SymlinkHandler<'a> {
 impl<'a> SymlinkHandler<'a> {
     /// Initializes SymlinkHandler and fills it dotfiles' status information
     fn try_new(ctx: &'a Context) -> Result<Self, ExitCode> {
-        let dotfiles_dir = match dotfiles::get_dotfiles_path(ctx.profile.clone()) {
-            Ok(dir) => dir,
-            Err(e) => {
-                eprintln!("{e}");
-                return Err(ReturnCode::CouldntFindDotfiles.into());
-            }
-        };
-
         if let Err(err) = dotfiles::get_dotfiles_target_dir_path() {
             eprintln!("{err}");
             return Err(ReturnCode::NoSuchFileOrDir.into());
@@ -136,7 +128,7 @@ impl<'a> SymlinkHandler<'a> {
 
         let mut symlinker = SymlinkHandler {
             ctx,
-            dotfiles_dir,
+            dotfiles_dir: ctx.dotfiles_dir.clone(),
             symlinked: HashCache::new(),
             not_symlinked: HashCache::new(),
             not_owned: HashCache::new(),
@@ -554,7 +546,7 @@ pub fn add_cmd(
     let mut sym = SymlinkHandler::try_new(ctx)?;
 
     if let Some(nonexistent_groups) =
-        dotfiles::get_nonexistent_groups(ctx.profile.clone(), DotfileType::Configs, groups)
+        dotfiles::get_nonexistent_groups(&ctx.dotfiles_dir, DotfileType::Configs, groups)
     {
         for group in nonexistent_groups {
             eprintln!("{}", t!("errors.x_doesnt_exist", x = group).red());
@@ -710,7 +702,7 @@ pub fn remove_cmd(ctx: &Context, groups: &[String], exclude: &[String]) -> Resul
     }
 
     if let Some(nonexistent_groups) =
-        dotfiles::get_nonexistent_groups(ctx.profile.clone(), DotfileType::Configs, groups)
+        dotfiles::get_nonexistent_groups(&ctx.dotfiles_dir, DotfileType::Configs, groups)
     {
         for group in nonexistent_groups {
             eprintln!("{}", t!("errors.x_doesnt_exist", x = group).red());
@@ -950,7 +942,7 @@ fn print_groups_status(
         .collect();
 
     let nonexistent_groups =
-        dotfiles::get_nonexistent_groups(ctx.profile.clone(), DotfileType::Configs, &groups);
+        dotfiles::get_nonexistent_groups(&ctx.dotfiles_dir, DotfileType::Configs, &groups);
 
     let unsupported = {
         let mut unsupported = Vec::new();
@@ -1222,8 +1214,7 @@ mod tests {
     fn test_adding_symlink() {
         let _test = Test::start();
 
-        let mut ctx = Context::default();
-        ctx.profile = None;
+        let ctx = Context::default();
 
         let mut sym = SymlinkHandler::try_new(&ctx).unwrap();
         assert!(
