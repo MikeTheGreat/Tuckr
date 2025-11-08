@@ -622,7 +622,12 @@ pub fn get_user_confirmation(msg: &str) -> bool {
 
 // TODO: translate messages
 // TODO: add colors to the dry run messages
-pub fn from_stow_cmd(ctx: &Context, stow_path: Option<String>) -> Result<(), ExitCode> {
+pub fn from_stow_cmd(
+    ctx: &Context,
+    stow_path: Option<String>,
+    dotfiles_mode: Option<bool>,
+    assume_yes: bool,
+) -> Result<(), ExitCode> {
 
     // Helper to compute the intended dotfiles directory without requiring it to exist
     let compute_potential_dir = |profile: Option<String>| -> PathBuf {
@@ -648,16 +653,27 @@ pub fn from_stow_cmd(ctx: &Context, stow_path: Option<String>) -> Result<(), Exi
 
     println!("{}", FROM_STOW_HELP);
 
-    let used_dot_prefix = get_user_confirmation("Did you use `--dotfiles` with Stow?");
+    let used_dot_prefix = match dotfiles_mode {
+        Some(mode) => mode,
+        None => get_user_confirmation("Did you use `--dotfiles` with Stow?"),
+    };
 
-    if !get_user_confirmation(t!("warn.want_to_proceed").into_owned().as_ref()) {
+    if !assume_yes && !get_user_confirmation(t!("warn.want_to_proceed").into_owned().as_ref()) {
         return Err(ExitCode::FAILURE);
     }
 
-    let temp_profile = Some(match ctx.profile.as_ref() {
+    // In test mode, we can't use the temp profile mechanism because all profiles
+    // resolve to the same test directory. So we skip it entirely when testing.
+    let use_temp_profile = !cfg!(test);
+
+    let temp_profile = if use_temp_profile {
+        Some(match ctx.profile.as_ref() {
         Some(profile) => format!("{profile}_incomplete_conversion"),
         None => "incomplete_conversion".into(),
-    });
+        })
+    } else {
+        None
+    };
 
     // Ensure the primary dotfiles dir exists for the active profile
     init_cmd(ctx)?;

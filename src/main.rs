@@ -391,7 +391,7 @@ fn main() -> ExitCode {
 
         Command::GroupIs { files } => fileops::groupis_cmd(&cli.ctx, &files),
 
-        Command::FromStow { stow_path } => fileops::from_stow_cmd(&cli.ctx, stow_path),
+        Command::FromStow { stow_path } => fileops::from_stow_cmd(&cli.ctx, stow_path, None, false),
     };
 
     match exit_code {
