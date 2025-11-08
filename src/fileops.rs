@@ -629,28 +629,6 @@ pub fn from_stow_cmd(
     assume_yes: bool,
 ) -> Result<(), ExitCode> {
 
-    // Helper to compute the intended dotfiles directory without requiring it to exist
-    let compute_potential_dir = |profile: Option<String>| -> PathBuf {
-        let potential = dotfiles::get_potential_dotfiles_paths(profile);
-        if cfg!(test) {
-            potential.test
-        } else if let Some(dir) = potential.env {
-            dir
-        } else {
-            potential.config
-        }
-    };
-
-    // Helper to compute the old backup directory path
-    let compute_old_dotfiles_path = |dotfiles_dir: path::PathBuf| -> PathBuf {
-        let old_dirname = dotfiles_dir.file_name().unwrap().to_str().unwrap();
-        dotfiles_dir
-            .parent()
-            .unwrap()
-            .join(format!("{old_dirname}_old"))
-    };
-
-
     println!("{}", FROM_STOW_HELP);
 
     let used_dot_prefix = match dotfiles_mode {
@@ -662,18 +640,10 @@ pub fn from_stow_cmd(
         return Err(ExitCode::FAILURE);
     }
 
-    // In test mode, we can't use the temp profile mechanism because all profiles
-    // resolve to the same test directory. So we skip it entirely when testing.
-    let use_temp_profile = !cfg!(test);
+    let dotfiles_dir = &ctx.dotfiles_dir;
 
-    let temp_profile = if use_temp_profile {
-        Some(match ctx.profile.as_ref() {
-        Some(profile) => format!("{profile}_incomplete_conversion"),
-        None => "incomplete_conversion".into(),
-        })
-    } else {
-        None
-    };
+    // Check if dotfiles_dir existed before we initialize it
+    let dotfiles_existed_before = dotfiles_dir.exists();
 
     // Ensure the primary dotfiles dir exists for the active profile
     init_cmd(ctx)?;
@@ -683,72 +653,63 @@ pub fn from_stow_cmd(
         None => std::env::current_dir().unwrap(),
     };
 
-    let dotfiles_dir = match dotfiles::get_dotfiles_path(ctx.profile.clone()) {
-        Ok(dir) => dir,
-        Err(err) => {
-            if ctx.dry_run {
-                eprintln!(
-                    "{}\n{}",
-                    "[dry-run] Could not find existing dotfiles directory for active profile; simulating with intended location.",
-                    err
-                );
-
-                compute_potential_dir(ctx.profile.clone())
-            } else {
-                println!("error getting dotfiles path for profile {:?}", ctx.profile);
-                eprintln!("{err}");
-                return Err(ReturnCode::CouldntFindDotfiles.into());
-            }
-        }
+    // Check if backup already exists
+    let old_dotfiles = {
+        let old_dirname = dotfiles_dir.file_name().unwrap().to_str().unwrap();
+        dotfiles_dir
+            .parent()
+            .unwrap()
+            .join(format!("{old_dirname}_old"))
     };
 
-    if dotfiles_dir.exists() {
-        let old_dotfiles = compute_old_dotfiles_path(dotfiles_dir.clone());
-        
-        if old_dotfiles.exists() {
-            eprintln!(
-                "{}",
-                format!(
-                    "Error: The backup directory '{}' already exists from a previous conversion.",
-                    old_dotfiles.display()
-                )
-                .red()
-            );
-            eprintln!(
-                "{}",
-                "Please remove or rename it before running from-stow again."
-            );
-            return Err(ExitCode::FAILURE);
-        }
+    if dotfiles_dir.exists() && old_dotfiles.exists() {
+        eprintln!(
+            "{}",
+            format!(
+                "Error: The backup directory '{}' already exists from a previous conversion.",
+                old_dotfiles.display()
+            )
+            .red()
+        );
+        eprintln!(
+            "{}",
+            "Please remove or rename it before running from-stow again."
+        );
+        return Err(ExitCode::FAILURE);
     }
 
-    // we want to preserve the user's original configs just in case we screw up the conversion
-    // or they want to go back and they didn't have version control enabled
-    // so we work on a new copy and then swap to the new one if it's converted successfully
+    // Create a thread-safe temp directory as a sibling to dotfiles_dir
+    // Format: {dirname}_temp_{thread_id}
+    let thread_id = std::thread::current().id();
+    let temp_dirname = format!(
+        "{}_temp_{:?}",
+        dotfiles_dir.file_name().unwrap().to_str().unwrap(),
+        thread_id
+    );
+    let temp_dotfiles_dir = dotfiles_dir.parent().unwrap().join(temp_dirname);
 
-    // Clean up any existing temp profile directory from a previous failed conversion
-    let temp_dotfiles_dir_path = compute_potential_dir(temp_profile.clone());
-    if temp_dotfiles_dir_path.exists() {
+    // Clean up any existing temp directory from a previous failed conversion
+    if temp_dotfiles_dir.exists() {
         if ctx.dry_run {
             eprintln!(
                 "{}",
                 format!(
-                    "[dry-run] Would remove existing temp profile directory: {}",
-                    temp_dotfiles_dir_path.display()
+                    "[dry-run] Would remove existing temp directory: {}",
+                    temp_dotfiles_dir.display()
                 )
                 .yellow()
             );
         } else {
             println!(
-                "Removing existing temp profile directory from previous conversion: {}",
-                temp_dotfiles_dir_path.display()
+                "Removing existing temp directory from previous conversion: {}",
+                temp_dotfiles_dir.display()
             );
-            if let Err(e) = fs::remove_dir_all(&temp_dotfiles_dir_path) {
+            if let Err(e) = fs::remove_dir_all(&temp_dotfiles_dir) {
                 eprintln!(
                     "{}",
                     format!(
-                        "Failed to remove temp profile directory `{}`: {}",
-                        temp_dotfiles_dir_path.display(),
+                        "Failed to remove temp directory `{}`: {}",
+                        temp_dotfiles_dir.display(),
                         e
                     )
                     .red()
@@ -758,25 +719,15 @@ pub fn from_stow_cmd(
         }
     }
 
+    // Create temp directory structure or simulate it in dry-run mode
     let new_dotfiles_dir = if ctx.dry_run {
-        // In dry-run, we don't actually create the temp dir; simulate its intended path
-        compute_potential_dir(temp_profile.clone())
+        temp_dotfiles_dir.clone()
     } else {
-        let temp_ctx = Context {
-            profile: temp_profile.clone(),
-            dry_run: ctx.dry_run,
-            custom_targets: ctx.custom_targets.clone(),
-        };
-        init_cmd(&temp_ctx)?;
-
-        match dotfiles::get_dotfiles_path(temp_profile.clone()) {
-            Ok(dir) => dir,
-            Err(err) => {
-                println!("error getting dotfiles path for temp profile {:?}", temp_profile);
-                eprintln!("{err}");
-                return Err(ReturnCode::CouldntFindDotfiles.into());
-            }
+        // Create the temp dotfiles directory structure
+        for subdir in ["Configs", "Hooks", "Secrets"] {
+            fs::create_dir_all(temp_dotfiles_dir.join(subdir)).unwrap();
         }
+        temp_dotfiles_dir.clone()
     };
 
     let new_configs_dir = new_dotfiles_dir.join("Configs");
@@ -822,24 +773,36 @@ pub fn from_stow_cmd(
         }
     }
 
-    if dotfiles_dir.exists() {
-        let old_dotfiles = compute_old_dotfiles_path(dotfiles_dir.clone());
-
+    // If dotfiles_dir existed before conversion, back it up before replacing with converted version
+    if dotfiles_existed_before {
         if ctx.dry_run {
             eprintln!(
-                "Moving previous dofiles (`{}`) to `{}`",
+                "Moving previous dotfiles (`{}`) to `{}`",
                 dotfiles_dir.display(),
                 old_dotfiles.display()
             );
         } else {
-            fs::rename(&dotfiles_dir, old_dotfiles).unwrap();
+            // Rename the existing dotfiles directory to backup
+            fs::rename(dotfiles_dir, &old_dotfiles).unwrap();
         }
+    } else if !ctx.dry_run {
+        // If dotfiles_dir didn't exist before but init_cmd created it, remove it
+        // so we can rename the temp directory into its place
+        if dotfiles_dir.exists() {
+            fs::remove_dir_all(dotfiles_dir).unwrap();
+        }
+    }
 
-        if ctx.dry_run {
-            eprintln!("Moving converted dotfiles to `{}`", dotfiles_dir.display());
-        } else {
-            fs::rename(new_dotfiles_dir, dotfiles_dir).unwrap();
-        }
+    // Move the temp directory to the final location
+    if ctx.dry_run {
+        eprintln!("Moving converted dotfiles to `{}`", dotfiles_dir.display());
+    } else {
+        fs::rename(&new_dotfiles_dir, dotfiles_dir).unwrap();
+    }
+
+    // Clean up temp directory in case of dry-run (it wasn't actually renamed)
+    if ctx.dry_run && new_dotfiles_dir.exists() {
+        let _ = fs::remove_dir_all(&new_dotfiles_dir);
     }
 
     if ctx.dry_run {
@@ -1131,10 +1094,18 @@ mod tests {
                 let _ = fs::remove_dir_all(&backup);
             }
 
-            // Clean up temp profile directories
-            let temp_dir = dotfiles::get_potential_dotfiles_paths(Some("incomplete_conversion".into())).test;
-            if temp_dir.exists() {
-                let _ = fs::remove_dir_all(&temp_dir);
+            // Clean up temp directories (format: dotfiles_temp_ThreadId(...))
+            if let Some(parent) = self.dotfiles_dir.parent() {
+                if let Ok(entries) = fs::read_dir(parent) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                            if name.starts_with("dotfiles_temp_") {
+                                let _ = fs::remove_dir_all(&path);
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -1351,6 +1322,11 @@ mod tests {
         // Use profile
         let mut ctx = Context::default();
         ctx.profile = Some("work".to_string());
+        ctx.dotfiles_dir = dotfiles::get_dotfiles_path(Some("work".to_string())).unwrap();
+
+        // Clean up any leftover backup from previous test runs
+        let backup_dir = ctx.dotfiles_dir.parent().unwrap().join("dotfiles_old");
+        let _ = fs::remove_dir_all(&backup_dir);
 
         let result = super::from_stow_cmd(
             &ctx,
@@ -1371,19 +1347,29 @@ mod tests {
         let _ = fs::remove_dir_all(&dotfiles_dir);
         let backup_dir = dotfiles_dir.parent().unwrap().join("dotfiles_work_old");
         let _ = fs::remove_dir_all(&backup_dir);
-        let temp_dir = dotfiles::get_potential_dotfiles_paths(
-            Some("work_incomplete_conversion".into())
-        ).test;
-        let _ = fs::remove_dir_all(&temp_dir);
+        // Clean up temp directories
+        if let Some(parent) = dotfiles_dir.parent() {
+            if let Ok(entries) = fs::read_dir(parent) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                        if name.starts_with("dotfiles_work_temp_") {
+                            let _ = fs::remove_dir_all(&path);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]
-    fn from_stow_temp_profile_cleanup() {
+    fn from_stow_temp_directory_cleanup() {
         let test = FromStowTest::new(std::thread::current().name().unwrap());
 
-        // Create a leftover temp profile directory
-        let temp_profile = Some("incomplete_conversion".to_string());
-        let temp_dir = dotfiles::get_potential_dotfiles_paths(temp_profile.clone()).test;
+        // Create a leftover temp directory from a "previous failed conversion"
+        let thread_id = std::thread::current().id();
+        let temp_dirname = format!("dotfiles_temp_{:?}", thread_id);
+        let temp_dir = test.dotfiles_dir.parent().unwrap().join(temp_dirname);
         fs::create_dir_all(&temp_dir).unwrap();
         fs::write(temp_dir.join("leftover.txt"), "old stuff").unwrap();
 

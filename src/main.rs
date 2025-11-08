@@ -16,6 +16,7 @@ mod secrets;
 mod symlinks;
 
 use clap::{Parser, Subcommand};
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 rust_i18n::i18n!("locales", minify_key = true, fallback = "en");
@@ -51,6 +52,11 @@ pub struct Context {
     /// groups.
     #[arg(short = 't', long = "targets", use_value_delimiter = true)]
     pub custom_targets: Vec<String>,
+
+    /// The dotfiles directory path (resolved from profile or default location).
+    /// This is not a CLI argument - it's computed in main() from the profile.
+    #[arg(skip)]
+    pub dotfiles_dir: PathBuf,
 }
 
 // we should never even be creating our own context since this is user provided context
@@ -62,6 +68,7 @@ impl Default for Context {
             profile: None,
             dry_run: false,
             custom_targets: vec!["custom".into(), "laptop".into()],
+            dotfiles_dir: dotfiles::get_dotfiles_path(None).unwrap(),
         }
     }
 }
@@ -318,7 +325,7 @@ enum ListType {
 }
 
 fn main() -> ExitCode {
-    let cli = {
+    let mut cli = {
         // custom targets can be set permanently through env vars or set temporarily through the cli
         // so we need to append env var targets before running
         let mut cli = Cli::parse();
@@ -331,6 +338,18 @@ fn main() -> ExitCode {
         }
         cli
     };
+
+    // Initialize dotfiles_dir from the profile (or default)
+    // For Init command, we'll handle the error gracefully
+    match dotfiles::get_dotfiles_path(cli.ctx.profile.clone()) {
+        Ok(path) => cli.ctx.dotfiles_dir = path,
+        Err(_) => {
+            // If get_dotfiles_path fails (e.g., dotfiles dir doesn't exist yet),
+            // we'll let individual commands handle it. For now, use a placeholder.
+            // The Init command will create the directory structure.
+            cli.ctx.dotfiles_dir = PathBuf::new();
+        }
+    }
 
     rust_i18n::set_locale(sys_locale::get_locale().unwrap_or_default().as_str());
 
