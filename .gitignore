@@ -2,3 +2,7 @@
 target
 pkg/*
 !pkg/PKGBUILD
+
+.github/*
+.claude/*
+CLAUDE.md
